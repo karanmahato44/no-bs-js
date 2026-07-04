@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>no-bs-js</title>
+    <script type="module" src="/src/options/main.ts"></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="actions">
+          <label class="button secondary">
+            import
+            <input
+              id="fileInput"
+              type="file"
+              accept=".js,.user.js,text/javascript"
+              multiple
+              hidden
+            />
+          </label>
+          <button id="pasteButton" class="button secondary" type="button">paste</button>
+        </div>
+      </header>
+
+      <section class="workspace" aria-label="scripts">
+        <aside class="script-list">
+          <div id="scripts"></div>
+        </aside>
+
+        <section id="detail" class="detail" aria-label="selected script">
+          <div id="detailEmpty" class="empty">import or paste a `.user.js` file.</div>
+          <div id="pastePanel" class="paste-panel" hidden>
+            <textarea
+              id="pasteSource"
+              spellcheck="false"
+              placeholder="paste .user.js source"
+            ></textarea>
+            <div class="paste-actions">
+              <button id="pasteImportButton" class="button primary" type="button">save</button>
+              <button id="pasteCancelButton" class="button secondary" type="button">cancel</button>
+            </div>
+          </div>
+          <div id="detailPanel" hidden>
+            <div class="detail-actions">
+              <button id="copyButton" class="button secondary" type="button">copy</button>
+              <button id="editButton" class="button secondary" type="button">edit</button>
+              <button id="saveButton" class="button primary" type="button" hidden>save</button>
+              <button id="cancelEditButton" class="button secondary" type="button" hidden>
+                cancel
+              </button>
+              <button id="exportButton" class="button secondary" type="button">export</button>
+              <button id="deleteButton" class="button danger" type="button">delete</button>
+            </div>
+            <pre id="scriptSource" class="source-view"></pre>
+            <textarea id="scriptEditor" class="source-editor" spellcheck="false" hidden></textarea>
+          </div>
+          <div id="errorPanel" class="error-panel" role="alert" hidden></div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
