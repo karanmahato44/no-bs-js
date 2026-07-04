@@ -18,10 +18,12 @@ import {
   saveScripts,
   updateScriptStatus,
 } from "../services/storage";
+import type { ZipTextEntry } from "../services/export-zip";
 
 const elements = {
   fileInput: byId<HTMLInputElement>("fileInput"),
   pasteButton: byId<HTMLButtonElement>("pasteButton"),
+  exportAllButton: byId<HTMLButtonElement>("exportAllButton"),
   pastePanel: byId<HTMLElement>("pastePanel"),
   pasteSource: byId<HTMLTextAreaElement>("pasteSource"),
   pasteImportButton: byId<HTMLButtonElement>("pasteImportButton"),
@@ -67,6 +69,9 @@ const boot = async (): Promise<void> => {
   });
   elements.pasteButton.addEventListener("click", () => {
     void runAction(handlePasteImport);
+  });
+  elements.exportAllButton.addEventListener("click", () => {
+    void runAction(handleExportAll);
   });
   elements.pasteImportButton.addEventListener("click", () => {
     void runAction(handlePasteSubmit);
@@ -267,15 +272,43 @@ const handleExport = (): void => {
   }
 
   const source = getVisibleSource() ?? selectedRecord.source;
-  const blob = new Blob([source], { type: "text/javascript" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${fileSafeName(selectedRecord.meta.name)}.user.js`;
-  link.click();
-  window.setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 0);
+  downloadBlob(new Blob([source], { type: "text/javascript" }), userScriptFileName(selectedRecord));
+};
+
+const handleExportAll = async (): Promise<void> => {
+  const scriptIndex = await listScriptIndex();
+  if (scriptIndex.length === 0) {
+    showError("no scripts");
+    return;
+  }
+
+  const [records, { createZipBlob }] = await Promise.all([
+    Promise.all(scriptIndex.map((item) => getScript(item.id))),
+    import("../services/export-zip"),
+  ]);
+  const missing: string[] = [];
+  const usedNames = new Set<string>();
+  const entries: ZipTextEntry[] = [];
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record == null) {
+      const item = scriptIndex[index];
+      missing.push(item?.name ?? `script ${index + 1}`);
+    } else {
+      entries.push({ path: userScriptFileName(record, usedNames), content: record.source });
+    }
+  }
+
+  if (entries.length === 0) {
+    showError("no scripts");
+    return;
+  }
+
+  downloadBlob(createZipBlob(entries), "no-bs-js-userscripts.zip");
+  if (missing.length > 0) {
+    showError(`missing scripts: ${missing.join(", ")}`);
+  }
 };
 
 const startEdit = (): void => {
@@ -462,6 +495,32 @@ const flashButton = (button: HTMLButtonElement, label: string): void => {
     button.textContent = original;
     copyResetTimer = null;
   }, 900);
+};
+
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 0);
+};
+
+const userScriptFileName = (record: UserScriptRecord, usedNames?: Set<string>): string => {
+  const base = fileSafeName(record.meta.name);
+  let name = `${base}.user.js`;
+  if (usedNames === undefined) {
+    return name;
+  }
+
+  for (let suffix = 2; usedNames.has(name); suffix += 1) {
+    name = `${base}-${suffix}.user.js`;
+  }
+
+  usedNames.add(name);
+  return name;
 };
 
 const fileSafeName = (name: string): string => {
