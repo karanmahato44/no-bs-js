@@ -32,15 +32,15 @@
         <section id="detail" class="detail" aria-label="selected script">
           <div id="detailEmpty" class="empty">import or paste a `.user.js` file.</div>
           <div id="pastePanel" class="paste-panel" hidden>
+            <div class="paste-actions">
+              <button id="pasteImportButton" class="button primary" type="button">save</button>
+              <button id="pasteCancelButton" class="button secondary" type="button">cancel</button>
+            </div>
             <textarea
               id="pasteSource"
               spellcheck="false"
               placeholder="paste .user.js source"
             ></textarea>
-            <div class="paste-actions">
-              <button id="pasteImportButton" class="button primary" type="button">save</button>
-              <button id="pasteCancelButton" class="button secondary" type="button">cancel</button>
-            </div>
           </div>
           <div id="detailPanel" hidden>
             <div class="detail-actions">
