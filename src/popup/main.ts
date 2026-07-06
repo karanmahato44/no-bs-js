@@ -64,13 +64,13 @@ const bootRowsOnly = async (): Promise<void> => {
 
 const renderScripts = async (url: string, host: string): Promise<void> => {
   const index = await listScriptIndex();
+  const enabledIndex = index.filter((item) => item.status === "enabled");
   const [records, hostOverrides] = await Promise.all([
-    Promise.all(index.map((item) => getScript(item.id))),
+    Promise.all(enabledIndex.map((item) => getScript(item.id))),
     getScriptHostOverrides(host),
   ]);
   const matches = records
     .filter((record): record is UserScriptRecord => record !== null)
-    .filter((record) => record.status === "enabled")
     .filter((record) => scriptTargetsUrl(record.meta, url))
     .map((record) => ({
       record,

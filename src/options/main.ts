@@ -332,6 +332,7 @@ const startEdit = (): void => {
   }
 
   elements.scriptEditor.value = selectedRecord.source;
+  elements.scriptSource.textContent = "";
   setEditMode(true);
   elements.scriptEditor.focus();
 };
@@ -511,7 +512,6 @@ const renderDetail = (record: UserScriptRecord): void => {
   elements.pastePanel.hidden = true;
   elements.detailPanel.hidden = false;
   elements.scriptSource.textContent = record.source;
-  elements.scriptEditor.value = record.source;
   setEditMode(false);
 };
 
@@ -519,6 +519,7 @@ const renderEmpty = (): void => {
   elements.pastePanel.hidden = true;
   elements.detailEmpty.hidden = false;
   elements.detailPanel.hidden = true;
+  elements.scriptSource.textContent = "";
   setEditMode(false);
 };
 
@@ -528,6 +529,9 @@ const setEditMode = (editing: boolean): void => {
   elements.editButton.hidden = editing;
   elements.saveButton.hidden = !editing;
   elements.cancelEditButton.hidden = !editing;
+  if (!editing) {
+    elements.scriptEditor.value = "";
+  }
 };
 
 const runAction = async (action: () => void | Promise<void>): Promise<void> => {
