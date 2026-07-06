@@ -2,7 +2,7 @@ import "./style.css";
 
 import { describeError } from "../domain/error-message";
 import { scriptTargetsUrl } from "../domain/url-match";
-import type { UserScriptRecord } from "../domain/types";
+import type { ScriptId, UserScriptRecord } from "../domain/types";
 import { reconcileRegistrations, syncScriptRegistration } from "../services/registration";
 import {
   getExtensionEnabled,
@@ -10,6 +10,7 @@ import {
   getScriptHostOverrides,
   listScriptIndex,
   setExtensionEnabled,
+  setPendingOptionsScriptId,
   setScriptHostOverride,
 } from "../services/storage";
 
@@ -93,11 +94,19 @@ const renderScriptRow = (
   host: string,
   siteEnabled: boolean,
 ): HTMLElement => {
-  const row = document.createElement("label");
+  const row = document.createElement("div");
   row.className = "script-row";
 
   const name = document.createElement("span");
   name.textContent = record.meta.name;
+
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.textContent = "</>";
+  edit.title = `edit ${record.meta.name}`;
+  edit.addEventListener("click", () => {
+    void runAction(() => openScriptOptions(record.id));
+  });
 
   const input = document.createElement("input");
   input.type = "checkbox";
@@ -107,8 +116,14 @@ const renderScriptRow = (
     void runAction(() => toggleScript(record, host, input.checked));
   });
 
-  row.append(name, input);
+  row.append(name, edit, input);
   return row;
+};
+
+const openScriptOptions = async (id: ScriptId): Promise<void> => {
+  await setPendingOptionsScriptId(id);
+  await chrome.runtime.openOptionsPage();
+  window.close();
 };
 
 const toggleScript = async (

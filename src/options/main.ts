@@ -14,8 +14,10 @@ import {
   getExtensionEnabled,
   getScript,
   listScriptIndex,
+  onPendingOptionsScriptId,
   saveScript,
   saveScripts,
+  takePendingOptionsScriptId,
   updateScriptStatus,
 } from "../services/storage";
 import type { ZipTextEntry } from "../services/export-zip";
@@ -45,6 +47,7 @@ const elements = {
 let selectedId: ScriptId | null = null;
 let selectedRecord: UserScriptRecord | null = null;
 let copyResetTimer: number | null = null;
+const scriptSearchParam = "script";
 
 type ImportInput = {
   label: string;
@@ -99,8 +102,18 @@ const boot = async (): Promise<void> => {
   elements.deleteButton.addEventListener("click", () => {
     void runAction(handleDelete);
   });
+  window.addEventListener("popstate", () => {
+    void runAction(restoreSelectedScriptFromUrl);
+  });
+  onPendingOptionsScriptId(() => {
+    void runAction(async () => {
+      await restorePendingSelectedScript();
+    });
+  });
 
-  await renderList();
+  if (!(await restorePendingSelectedScript())) {
+    await restoreSelectedScriptFromUrl();
+  }
 };
 
 const handleFileImport = async (): Promise<void> => {
@@ -200,6 +213,7 @@ const importSources = async (
   if (lastRecord !== null) {
     selectedId = lastRecord.id;
     selectedRecord = lastRecord;
+    syncSelectedScriptUrl(lastRecord.id);
     if (options.clearPaste) {
       elements.pasteSource.value = "";
     }
@@ -350,6 +364,7 @@ const handleSaveEdit = async (): Promise<void> => {
 
   selectedRecord = updated.value;
   selectedId = updated.value.id;
+  syncSelectedScriptUrl(updated.value.id);
   await renderList();
   renderDetail(updated.value);
 };
@@ -394,6 +409,7 @@ const handleDelete = async (): Promise<void> => {
   await deleteScript(id);
   selectedId = null;
   selectedRecord = null;
+  syncSelectedScriptUrl(null);
   await renderList();
   renderEmpty();
 };
@@ -428,16 +444,66 @@ const renderScriptButton = (item: ScriptIndexItem): HTMLElement => {
 };
 
 const selectScript = async (id: ScriptId): Promise<void> => {
+  await loadScriptSelection(id, true);
+};
+
+const restoreSelectedScriptFromUrl = async (): Promise<void> => {
+  const id = selectedScriptIdFromUrl();
+  if (id === null) {
+    selectedId = null;
+    selectedRecord = null;
+    await renderList();
+    renderEmpty();
+    return;
+  }
+
+  await loadScriptSelection(id, false);
+};
+
+const restorePendingSelectedScript = async (): Promise<boolean> => {
+  const id = await takePendingOptionsScriptId();
+  if (id === null) {
+    return false;
+  }
+
+  await loadScriptSelection(id, true);
+  return true;
+};
+
+const loadScriptSelection = async (id: ScriptId, syncUrl: boolean): Promise<void> => {
   const record = await getScript(id);
   if (record === null) {
+    selectedId = null;
+    selectedRecord = null;
+    syncSelectedScriptUrl(null);
+    await renderList();
+    renderEmpty();
     showError("script not found");
     return;
   }
 
   selectedId = id;
   selectedRecord = record;
+  if (syncUrl) {
+    syncSelectedScriptUrl(id);
+  }
   await renderList();
   renderDetail(record);
+};
+
+const selectedScriptIdFromUrl = (): ScriptId | null => {
+  const value = new URL(window.location.href).searchParams.get(scriptSearchParam);
+  return value === null || value.length === 0 ? null : (value as ScriptId);
+};
+
+const syncSelectedScriptUrl = (id: ScriptId | null): void => {
+  const url = new URL(window.location.href);
+  if (id === null) {
+    url.searchParams.delete(scriptSearchParam);
+  } else {
+    url.searchParams.set(scriptSearchParam, id);
+  }
+  window.history.replaceState(null, "", url);
 };
 
 const renderDetail = (record: UserScriptRecord): void => {

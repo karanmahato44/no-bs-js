@@ -3,6 +3,7 @@ import type { ScriptId, ScriptIndexItem, ScriptStatus, UserScriptRecord } from "
 const indexKey = "scriptIndex";
 const siteDisabledKey = "siteDisabledHosts";
 const siteEnabledKey = "siteEnabledHosts";
+const pendingOptionsScriptKey = "pendingOptionsScriptId";
 const settingsKey = "settings";
 const scriptKey = (id: ScriptId): string => `script:${id}`;
 
@@ -89,6 +90,29 @@ export const setExtensionEnabled = async (enabled: boolean): Promise<void> => {
   const result = await chrome.storage.local.get(settingsKey);
   const settings = isObject(result[settingsKey]) ? result[settingsKey] : {};
   await chrome.storage.local.set({ [settingsKey]: { ...settings, enabled } });
+};
+
+export const setPendingOptionsScriptId = async (id: ScriptId): Promise<void> => {
+  await chrome.storage.session.set({ [pendingOptionsScriptKey]: id });
+};
+
+export const takePendingOptionsScriptId = async (): Promise<ScriptId | null> => {
+  const result = await chrome.storage.session.get(pendingOptionsScriptKey);
+  const value = result[pendingOptionsScriptKey];
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  await chrome.storage.session.remove(pendingOptionsScriptKey);
+  return value as ScriptId;
+};
+
+export const onPendingOptionsScriptId = (handler: () => void): void => {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "session" && typeof changes[pendingOptionsScriptKey]?.newValue === "string") {
+      handler();
+    }
+  });
 };
 
 export const getScriptHostLists = async (
