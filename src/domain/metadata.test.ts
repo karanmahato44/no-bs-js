@@ -171,4 +171,17 @@ describe("parseUserScriptMeta", () => {
       expect(result.value.includeGlobs).toEqual(["https://example.com/*"]);
     }
   });
+
+  it("parses exclude globs", () => {
+    const result = parseUserScriptMeta(`// ==UserScript==
+// @name x
+// @match *://*/*
+// @exclude https://docs.google.com/spreadsheets/*
+// ==/UserScript==`);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.excludeGlobs).toEqual(["https://docs.google.com/spreadsheets/*"]);
+    }
+  });
 });

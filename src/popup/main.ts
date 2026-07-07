@@ -1,7 +1,7 @@
 import "./style.css";
 
 import { describeError } from "../domain/error-message";
-import { scriptTargetsUrl } from "../domain/url-match";
+import { scriptMatchesUrl } from "../domain/url-match";
 import type { ScriptId, UserScriptRecord } from "../domain/types";
 import { reconcileRegistrations, syncScriptRegistration } from "../services/registration";
 import {
@@ -71,7 +71,7 @@ const renderScripts = async (url: string, host: string): Promise<void> => {
   ]);
   const matches = records
     .filter((record): record is UserScriptRecord => record !== null)
-    .filter((record) => scriptTargetsUrl(record.meta, url))
+    .filter((record) => scriptMatchesUrl(record.meta, url))
     .map((record) => ({
       record,
       siteEnabled: getSiteEnabled(record, hostOverrides),
