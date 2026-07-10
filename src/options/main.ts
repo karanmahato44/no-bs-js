@@ -13,6 +13,7 @@ import {
   deleteScript,
   getExtensionEnabled,
   getScript,
+  getScripts,
   listScriptIndex,
   onPendingOptionsScriptId,
   saveScript,
@@ -182,8 +183,8 @@ const importSources = async (
   const errors = [...(options.initialErrors ?? [])];
   const prefixErrors = inputs.length > 1 || errors.length > 0;
   const basePosition = inputs.length === 0 ? 0 : (await listScriptIndex()).length;
-  const created = await Promise.all(
-    inputs.map((input, offset) => createImportRecord(input, basePosition + offset, prefixErrors)),
+  const created = inputs.map((input, offset) =>
+    createImportRecord(input, basePosition + offset, prefixErrors),
   );
   const imports: Array<{ input: ImportInput; record: UserScriptRecord }> = [];
 
@@ -226,12 +227,12 @@ const importSources = async (
   }
 };
 
-const createImportRecord = async (
+const createImportRecord = (
   input: ImportInput,
   position: number,
   prefixErrors: boolean,
-): Promise<ImportCreateResult> => {
-  const result = await createImportedUserScript(input.source, position);
+): ImportCreateResult => {
+  const result = createImportedUserScript(input.source, position);
   if (!result.ok) {
     return {
       input,
@@ -297,7 +298,7 @@ const handleExportAll = async (): Promise<void> => {
   }
 
   const [records, { createZipBlob }] = await Promise.all([
-    Promise.all(scriptIndex.map((item) => getScript(item.id))),
+    getScripts(scriptIndex.map((item) => item.id)),
     import("../services/export-zip"),
   ]);
   const missing: string[] = [];
@@ -351,7 +352,7 @@ const handleSaveEdit = async (): Promise<void> => {
   }
 
   const source = elements.scriptEditor.value;
-  const updated = await updateScriptSource(selectedRecord, source);
+  const updated = updateScriptSource(selectedRecord, source);
   if (!updated.ok) {
     showError(updated.error.message);
     return;

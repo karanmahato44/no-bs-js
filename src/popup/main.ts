@@ -6,8 +6,8 @@ import type { ScriptId, UserScriptRecord } from "../domain/types";
 import { reconcileRegistrations, syncScriptRegistration } from "../services/registration";
 import {
   getExtensionEnabled,
-  getScript,
   getScriptHostOverrides,
+  getScripts,
   listScriptIndex,
   setExtensionEnabled,
   setPendingOptionsScriptId,
@@ -66,7 +66,7 @@ const renderScripts = async (url: string, host: string): Promise<void> => {
   const index = await listScriptIndex();
   const enabledIndex = index.filter((item) => item.status === "enabled");
   const [records, hostOverrides] = await Promise.all([
-    Promise.all(enabledIndex.map((item) => getScript(item.id))),
+    getScripts(enabledIndex.map((item) => item.id)),
     getScriptHostOverrides(host),
   ]);
   const matches = records

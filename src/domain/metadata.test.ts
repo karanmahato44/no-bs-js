@@ -23,14 +23,10 @@ describe("parseUserScriptMeta", () => {
       ok: true,
       value: {
         name: "test script",
-        namespace: "local",
-        version: "1.2.3",
-        description: "Does one thing",
         matches: ["https://example.com/*"],
         excludeMatches: ["https://example.com/private/*"],
         includeGlobs: [],
         excludeGlobs: [],
-        grants: ["none"],
         runAt: "document_start",
       },
     });

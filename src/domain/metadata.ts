@@ -86,14 +86,10 @@ export const parseUserScriptMeta = (source: string): Result<ParsedUserScriptMeta
 
   return ok({
     name,
-    namespace: firstValue(fields, "namespace"),
-    version: firstValue(fields, "version"),
-    description: firstValue(fields, "description"),
     matches,
     excludeMatches,
     includeGlobs,
     excludeGlobs: values(fields, "exclude"),
-    grants,
     runAt: runAtResult.value,
   });
 };

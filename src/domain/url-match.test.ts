@@ -22,14 +22,10 @@ describe("scriptMatchesUrl", () => {
   it("honors exclude globs", () => {
     const meta: ParsedUserScriptMeta = {
       name: "x",
-      namespace: null,
-      version: null,
-      description: null,
       matches: ["https://*.reddit.com/*"],
       excludeMatches: [],
       includeGlobs: [],
       excludeGlobs: ["https://old.reddit.com/*"],
-      grants: [],
       runAt: "document_idle",
     };
 

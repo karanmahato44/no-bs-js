@@ -1,28 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import type { UserScriptRecord } from "../domain/types";
-import { toRegisteredUserScript } from "./registration";
+import { createRegistrationPlan, toRegisteredUserScript } from "./registration";
 
 const record: UserScriptRecord = {
   id: "script-1" as UserScriptRecord["id"],
-  sourceHash: "hash",
   source: "console.log('x');",
   meta: {
     name: "x",
-    namespace: null,
-    version: null,
-    description: null,
     matches: ["https://*.reddit.com/*"],
     excludeMatches: ["https://old.reddit.com/*"],
     includeGlobs: [],
     excludeGlobs: ["https://old.reddit.com/*"],
-    grants: ["none"],
     runAt: "document_idle",
   },
   status: "enabled",
   position: 1,
-  createdAt: 100,
-  updatedAt: 100,
 };
 
 describe("toRegisteredUserScript", () => {
@@ -54,5 +47,32 @@ describe("toRegisteredUserScript", () => {
 
     expect(script.excludeMatches ?? []).not.toContain("https://old.reddit.com/*");
     expect(script.excludeGlobs ?? []).not.toContain("https://old.reddit.com/*");
+  });
+});
+
+describe("createRegistrationPlan", () => {
+  const registered = (id: string): chrome.userScripts.RegisteredUserScript => ({
+    id,
+    matches: ["https://example.com/*"],
+    js: [{ code: id }],
+  });
+
+  it("batches stale removal, updates, and new registrations", () => {
+    const next = { ...registered("keep"), js: [{ code: "changed" }] };
+    const plan = createRegistrationPlan(
+      [registered("stale"), registered("keep")],
+      [next, registered("new")],
+    );
+
+    expect(plan.unregisterIds).toEqual(["stale"]);
+    expect(plan.updates).toEqual([next]);
+    expect(plan.registrations.map((script) => script.id)).toEqual(["new"]);
+  });
+
+  it("skips unchanged registrations", () => {
+    const script = registered("same");
+    const plan = createRegistrationPlan([script], [registered("same")]);
+
+    expect(plan).toEqual({ unregisterIds: [], updates: [], registrations: [] });
   });
 });

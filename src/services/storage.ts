@@ -12,6 +12,11 @@ type SiteHostOverrides = {
   enabled: Record<string, string[]>;
 };
 
+export type ScriptHostLists = {
+  disabledHosts: string[];
+  enabledHosts: string[];
+};
+
 export const listScriptIndex = async (): Promise<ScriptIndexItem[]> => {
   const result = await chrome.storage.local.get(indexKey);
   const value = result[indexKey];
@@ -21,6 +26,17 @@ export const listScriptIndex = async (): Promise<ScriptIndexItem[]> => {
 export const getScript = async (id: ScriptId): Promise<UserScriptRecord | null> => {
   const result = await chrome.storage.local.get(scriptKey(id));
   return decodeScriptRecord(result[scriptKey(id)]);
+};
+
+export const getScripts = async (
+  ids: readonly ScriptId[],
+): Promise<Array<UserScriptRecord | null>> => {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const result = await chrome.storage.local.get(ids.map(scriptKey));
+  return ids.map((id) => decodeScriptRecord(result[scriptKey(id)]));
 };
 
 export const saveScript = async (record: UserScriptRecord): Promise<void> => {
@@ -72,7 +88,7 @@ export const updateScriptStatus = async (
     return null;
   }
 
-  const updated: UserScriptRecord = { ...record, status, updatedAt: Date.now() };
+  const updated: UserScriptRecord = { ...record, status };
   await saveScript(updated);
   return updated;
 };
@@ -115,14 +131,18 @@ export const onPendingOptionsScriptId = (handler: () => void): void => {
   });
 };
 
-export const getScriptHostLists = async (
-  id: ScriptId,
-): Promise<{ disabledHosts: string[]; enabledHosts: string[] }> => {
+export const getScriptHostLists = async (id: ScriptId): Promise<ScriptHostLists> => {
   const hostOverrides = await getSiteHostOverrides();
-  return {
-    disabledHosts: hostOverrides.disabled[id] ?? [],
-    enabledHosts: hostOverrides.enabled[id] ?? [],
-  };
+  return scriptHostLists(hostOverrides, id);
+};
+
+export const getScriptsHostLists = async (ids: readonly ScriptId[]): Promise<ScriptHostLists[]> => {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const hostOverrides = await getSiteHostOverrides();
+  return ids.map((id) => scriptHostLists(hostOverrides, id));
 };
 
 export const getScriptHostOverrides = async (host: string): Promise<Map<ScriptId, boolean>> => {
@@ -171,10 +191,8 @@ export const setScriptHostOverride = async (
 const toIndexItem = (record: UserScriptRecord): ScriptIndexItem => ({
   id: record.id,
   name: record.meta.name,
-  namespace: record.meta.namespace,
   status: record.status,
   position: record.position,
-  updatedAt: record.updatedAt,
 });
 
 const getSiteHostOverrides = async (): Promise<SiteHostOverrides> => {
@@ -184,6 +202,11 @@ const getSiteHostOverrides = async (): Promise<SiteHostOverrides> => {
     enabled: decodeSiteDisabledHosts(result[siteEnabledKey]),
   };
 };
+
+const scriptHostLists = (hostOverrides: SiteHostOverrides, id: ScriptId): ScriptHostLists => ({
+  disabledHosts: hostOverrides.disabled[id] ?? [],
+  enabledHosts: hostOverrides.enabled[id] ?? [],
+});
 
 const decodeSiteDisabledHosts = (value: unknown): Record<string, string[]> => {
   if (!isObject(value)) {
@@ -214,11 +237,37 @@ const decodeScriptIndex = (value: unknown): ScriptIndexItem[] => {
     return [];
   }
 
-  return value.filter(isScriptIndexItem).sort((left, right) => left.position - right.position);
+  return value
+    .filter(isScriptIndexItem)
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      status: item.status,
+      position: item.position,
+    }))
+    .sort((left, right) => left.position - right.position);
 };
 
-const decodeScriptRecord = (value: unknown): UserScriptRecord | null =>
-  isScriptRecord(value) ? value : null;
+const decodeScriptRecord = (value: unknown): UserScriptRecord | null => {
+  if (!isScriptRecord(value)) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    source: value.source,
+    meta: {
+      name: value.meta.name,
+      matches: value.meta.matches,
+      excludeMatches: value.meta.excludeMatches,
+      includeGlobs: value.meta.includeGlobs,
+      excludeGlobs: value.meta.excludeGlobs,
+      runAt: value.meta.runAt,
+    },
+    status: value.status,
+    position: value.position,
+  };
+};
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -231,10 +280,8 @@ const isScriptIndexItem = (value: unknown): value is ScriptIndexItem => {
   return (
     typeof value["id"] === "string" &&
     typeof value["name"] === "string" &&
-    (typeof value["namespace"] === "string" || value["namespace"] === null) &&
     (value["status"] === "enabled" || value["status"] === "disabled") &&
-    typeof value["position"] === "number" &&
-    typeof value["updatedAt"] === "number"
+    typeof value["position"] === "number"
   );
 };
 
@@ -249,21 +296,14 @@ const isScriptRecord = (value: unknown): value is UserScriptRecord => {
   const meta = value["meta"];
   return (
     typeof value["id"] === "string" &&
-    typeof value["sourceHash"] === "string" &&
     typeof value["source"] === "string" &&
     (value["status"] === "enabled" || value["status"] === "disabled") &&
     typeof value["position"] === "number" &&
-    typeof value["createdAt"] === "number" &&
-    typeof value["updatedAt"] === "number" &&
     typeof meta["name"] === "string" &&
-    (typeof meta["namespace"] === "string" || meta["namespace"] === null) &&
-    (typeof meta["version"] === "string" || meta["version"] === null) &&
-    (typeof meta["description"] === "string" || meta["description"] === null) &&
     isStringArray(meta["matches"]) &&
     isStringArray(meta["excludeMatches"]) &&
     isStringArray(meta["includeGlobs"]) &&
     isStringArray(meta["excludeGlobs"]) &&
-    isStringArray(meta["grants"]) &&
     (meta["runAt"] === "document_start" ||
       meta["runAt"] === "document_end" ||
       meta["runAt"] === "document_idle")

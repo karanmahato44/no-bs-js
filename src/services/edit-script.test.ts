@@ -23,29 +23,22 @@ console.log("next");
 
 const record: UserScriptRecord = {
   id: "script-1" as UserScriptRecord["id"],
-  sourceHash: "old-hash",
   source: originalSource,
   meta: {
     name: "old",
-    namespace: null,
-    version: null,
-    description: null,
     matches: ["https://example.com/*"],
     excludeMatches: [],
     includeGlobs: [],
     excludeGlobs: [],
-    grants: ["none"],
     runAt: "document_idle",
   },
   status: "enabled",
   position: 7,
-  createdAt: 100,
-  updatedAt: 200,
 };
 
 describe("updateScriptSource", () => {
-  it("rejects invalid edited source", async () => {
-    const result = await updateScriptSource(record, "not a userscript", 300);
+  it("rejects invalid edited source", () => {
+    const result = updateScriptSource(record, "not a userscript");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -53,8 +46,8 @@ describe("updateScriptSource", () => {
     }
   });
 
-  it("updates source/meta/hash and preserves identity fields", async () => {
-    const result = await updateScriptSource(record, nextSource, 300);
+  it("updates source and metadata while preserving identity fields", () => {
+    const result = updateScriptSource(record, nextSource);
 
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -64,10 +57,7 @@ describe("updateScriptSource", () => {
     expect(result.value.id).toBe(record.id);
     expect(result.value.status).toBe("enabled");
     expect(result.value.position).toBe(7);
-    expect(result.value.createdAt).toBe(100);
-    expect(result.value.updatedAt).toBe(300);
     expect(result.value.source).toBe(nextSource);
-    expect(result.value.sourceHash).not.toBe("old-hash");
     expect(result.value.meta.name).toBe("next");
     expect(result.value.meta.matches).toEqual(["https://example.org/*"]);
     expect(result.value.meta.runAt).toBe("document_start");
