@@ -1,4 +1,6 @@
 import { reconcileRegistrations } from "./services/registration";
+import { withScriptMutation } from "./services/script-actions";
+import { migrateSiteOverrides } from "./services/storage";
 
 chrome.runtime.onInstalled.addListener(() => {
   reconcile();
@@ -15,7 +17,10 @@ chrome.action.onClicked.addListener(() => {
 });
 
 const reconcile = (): void => {
-  void reconcileRegistrations()
+  void withScriptMutation(async () => {
+    await migrateSiteOverrides();
+    return reconcileRegistrations();
+  })
     .then((error) => {
       if (error !== null) {
         console.error(error.message);

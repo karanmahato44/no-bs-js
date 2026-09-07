@@ -4,6 +4,7 @@ import { describeError } from "../domain/error-message";
 import type { ScriptId, ScriptIndexItem, UserScriptRecord } from "../domain/types";
 import { updateScriptSource } from "../services/edit-script";
 import { createImportedUserScript } from "../services/import-script";
+import { setScriptEnabled, withScriptMutation } from "../services/script-actions";
 import {
   syncScriptRegistration,
   unregisterScript,
@@ -16,10 +17,10 @@ import {
   getScripts,
   listScriptIndex,
   onPendingOptionsScriptId,
+  onScriptsChanged,
   saveScript,
   saveScripts,
   takePendingOptionsScriptId,
-  updateScriptStatus,
 } from "../services/storage";
 import type { ZipTextEntry } from "../services/export-zip";
 
@@ -48,6 +49,12 @@ const elements = {
 let selectedId: ScriptId | null = null;
 let selectedRecord: UserScriptRecord | null = null;
 let copyResetTimer: number | null = null;
+let scriptIndex: readonly ScriptIndexItem[] = [];
+let selectionRevision = 0;
+const scriptRows = new Map<
+  ScriptId,
+  { row: HTMLElement; title: HTMLButtonElement; toggle: HTMLInputElement; pending: boolean }
+>();
 const scriptSearchParam = "script";
 
 type ImportInput = {
@@ -112,6 +119,33 @@ const boot = async (): Promise<void> => {
     });
   });
 
+  let indexChanged = false;
+  onScriptsChanged((changes) => {
+    if (changes.index !== undefined) {
+      indexChanged = true;
+      renderList(changes.index);
+    }
+    if (selectedId === null || !changes.records.has(selectedId)) {
+      return;
+    }
+    selectionRevision += 1;
+    const record = changes.records.get(selectedId) ?? null;
+    const sourceChanged = record?.source !== selectedRecord?.source;
+    selectedRecord = record;
+    if (record === null) {
+      selectedId = null;
+      syncSelectedScriptUrl(null);
+      renderEmpty();
+    } else if (sourceChanged && elements.scriptEditor.hidden && elements.pastePanel.hidden) {
+      renderDetail(record);
+    }
+  });
+
+  const index = await listScriptIndex();
+  if (!indexChanged) {
+    renderList(index);
+  }
+
   if (!(await restorePendingSelectedScript())) {
     await restoreSelectedScriptFromUrl();
   }
@@ -134,7 +168,9 @@ const handleFileImport = async (): Promise<void> => {
         inputs.push(result.input);
       }
     }
-    await importSources(inputs, { clearPaste: false, initialErrors: errors });
+    await withScriptMutation(() =>
+      importSources(inputs, { clearPaste: false, initialErrors: errors }),
+    );
   } finally {
     elements.fileInput.value = "";
   }
@@ -155,7 +191,7 @@ const handlePasteSubmit = async (): Promise<void> => {
     return;
   }
 
-  await importSources([{ label: "paste", source }], { clearPaste: true });
+  await withScriptMutation(() => importSources([{ label: "paste", source }], { clearPaste: true }));
 };
 
 const hidePastePanel = (): void => {
@@ -200,13 +236,15 @@ const importSources = async (
   const records = imports.map((item) => item.record);
   await saveScripts(records);
   const extensionEnabled = records.length === 0 ? true : await getExtensionEnabled();
-  const registrationErrors = await Promise.all(
+  const registrations = await Promise.allSettled(
     records.map((record) => syncScriptRegistration(record, { extensionEnabled })),
   );
-  for (const [index, error] of registrationErrors.entries()) {
+  for (const [index, result] of registrations.entries()) {
     const item = imports[index];
-    if (error !== null && item !== undefined) {
-      errors.push(formatImportError(item.input.label, error.message, true));
+    const message =
+      result.status === "rejected" ? describeError(result.reason) : result.value?.message;
+    if (message !== undefined && item !== undefined) {
+      errors.push(formatImportError(item.input.label, message, true));
     }
   }
 
@@ -218,7 +256,7 @@ const importSources = async (
     if (options.clearPaste) {
       elements.pasteSource.value = "";
     }
-    await renderList();
+    renderList();
     renderDetail(lastRecord);
   }
 
@@ -250,25 +288,6 @@ const formatImportError = (label: string, message: string, prefix: boolean): str
   }
 
   return `${label}: ${message}`;
-};
-
-const toggleScript = async (id: ScriptId, enabled: boolean): Promise<void> => {
-  const status = enabled ? "enabled" : "disabled";
-  const record = await updateScriptStatus(id, status);
-  if (record === null) {
-    showError("script not found");
-    return;
-  }
-
-  const error = await syncScriptRegistration(record);
-  selectedRecord = record;
-  if (error !== null) {
-    showError(error.message);
-  }
-  await renderList();
-  if (selectedId === id) {
-    renderDetail(record);
-  }
 };
 
 const handleCopy = async (): Promise<void> => {
@@ -351,24 +370,30 @@ const handleSaveEdit = async (): Promise<void> => {
     return;
   }
 
+  const id = selectedRecord.id;
   const source = elements.scriptEditor.value;
-  const updated = updateScriptSource(selectedRecord, source);
-  if (!updated.ok) {
-    showError(updated.error.message);
-    return;
-  }
+  await withScriptMutation(async () => {
+    const current = await getScript(id);
+    if (current === null) {
+      throw new Error("script not found");
+    }
+    const updated = updateScriptSource(current, source);
+    if (!updated.ok) {
+      showError(updated.error.message);
+      return;
+    }
 
-  await saveScript(updated.value);
-  const error = await syncScriptRegistration(updated.value);
-  if (error !== null) {
-    showError(error.message);
-  }
+    await saveScript(updated.value);
+    const error = await syncScriptRegistration(updated.value);
+    if (error !== null) {
+      showError(error.message);
+    }
 
-  selectedRecord = updated.value;
-  selectedId = updated.value.id;
-  syncSelectedScriptUrl(updated.value.id);
-  await renderList();
-  renderDetail(updated.value);
+    if (selectedId === id) {
+      selectedRecord = updated.value;
+      renderDetail(updated.value);
+    }
+  });
 };
 
 const handleEditorKeydown = (event: KeyboardEvent): void => {
@@ -402,47 +427,80 @@ const handleDelete = async (): Promise<void> => {
   }
 
   const id = selectedRecord.id;
-  const error = await unregisterScript(id);
-  if (error !== null) {
-    showError(error.message);
-    return;
+  await withScriptMutation(async () => {
+    const error = await unregisterScript(id);
+    if (error !== null) {
+      throw new Error(error.message);
+    }
+    await deleteScript(id);
+  });
+};
+
+const renderList = (index: readonly ScriptIndexItem[] = scriptIndex): void => {
+  scriptIndex = index;
+  const ids = new Set<ScriptId>();
+  for (const [position, item] of index.entries()) {
+    ids.add(item.id);
+    let entry = scriptRows.get(item.id);
+    if (entry === undefined) {
+      entry = createScriptButton(item.id);
+      scriptRows.set(item.id, entry);
+    }
+    entry.row.dataset["selected"] = item.id === selectedId ? "true" : "false";
+    if (entry.title.textContent !== item.name) {
+      entry.title.textContent = item.name;
+      entry.toggle.setAttribute("aria-label", `enable ${item.name}`);
+    }
+    if (!entry.pending) {
+      entry.toggle.checked = item.status === "enabled";
+    }
+    const current = elements.scripts.children[position] ?? null;
+    if (current !== entry.row) {
+      elements.scripts.insertBefore(entry.row, current);
+    }
   }
-
-  await deleteScript(id);
-  selectedId = null;
-  selectedRecord = null;
-  syncSelectedScriptUrl(null);
-  await renderList();
-  renderEmpty();
+  for (const [id, entry] of scriptRows) {
+    if (!ids.has(id)) {
+      entry.row.remove();
+      scriptRows.delete(id);
+    }
+  }
 };
 
-const renderList = async (): Promise<void> => {
-  const index = await listScriptIndex();
-  elements.scripts.replaceChildren(...index.map(renderScriptButton));
-};
-
-const renderScriptButton = (item: ScriptIndexItem): HTMLElement => {
+const createScriptButton = (id: ScriptId) => {
   const row = document.createElement("div");
   row.className = "script-row";
-  row.dataset["selected"] = item.id === selectedId ? "true" : "false";
 
   const title = document.createElement("button");
   title.className = "script-select";
   title.type = "button";
-  title.textContent = item.name;
   title.addEventListener("click", () => {
-    void runAction(() => selectScript(item.id));
+    void runAction(() => selectScript(id));
   });
 
   const toggle = document.createElement("input");
   toggle.type = "checkbox";
-  toggle.checked = item.status === "enabled";
+  const entry = { row, title, toggle, pending: false };
   toggle.addEventListener("change", () => {
-    void runAction(() => toggleScript(item.id, toggle.checked));
+    const enabled = toggle.checked;
+    entry.pending = true;
+    toggle.disabled = true;
+    void runAction(async () => {
+      try {
+        await setScriptEnabled(id, enabled);
+      } catch (error) {
+        toggle.checked = (await getScript(id))?.status === "enabled";
+        throw error;
+      } finally {
+        entry.pending = false;
+        toggle.disabled = false;
+        renderList();
+      }
+    });
   });
 
   row.append(title, toggle);
-  return row;
+  return entry;
 };
 
 const selectScript = async (id: ScriptId): Promise<void> => {
@@ -454,7 +512,8 @@ const restoreSelectedScriptFromUrl = async (): Promise<void> => {
   if (id === null) {
     selectedId = null;
     selectedRecord = null;
-    await renderList();
+    selectionRevision += 1;
+    renderList();
     renderEmpty();
     return;
   }
@@ -473,12 +532,23 @@ const restorePendingSelectedScript = async (): Promise<boolean> => {
 };
 
 const loadScriptSelection = async (id: ScriptId, syncUrl: boolean): Promise<void> => {
+  const revision = ++selectionRevision;
+  selectedId = id;
+  selectedRecord = null;
+  renderEmpty();
+  renderList();
+  if (syncUrl) {
+    syncSelectedScriptUrl(id);
+  }
   const record = await getScript(id);
+  if (revision !== selectionRevision) {
+    return;
+  }
   if (record === null) {
     selectedId = null;
     selectedRecord = null;
     syncSelectedScriptUrl(null);
-    await renderList();
+    renderList();
     renderEmpty();
     showError("script not found");
     return;
@@ -486,10 +556,7 @@ const loadScriptSelection = async (id: ScriptId, syncUrl: boolean): Promise<void
 
   selectedId = id;
   selectedRecord = record;
-  if (syncUrl) {
-    syncSelectedScriptUrl(id);
-  }
-  await renderList();
+  renderList();
   renderDetail(record);
 };
 

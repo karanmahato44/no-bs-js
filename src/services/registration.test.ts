@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { UserScriptRecord } from "../domain/types";
-import { createRegistrationPlan, toRegisteredUserScript } from "./registration";
+import {
+  createRegistrationPlan,
+  reconcileRegistrations,
+  syncScriptRegistration,
+  toRegisteredUserScript,
+} from "./registration";
 
 const record: UserScriptRecord = {
   id: "script-1" as UserScriptRecord["id"],
@@ -18,35 +23,80 @@ const record: UserScriptRecord = {
   position: 1,
 };
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("toRegisteredUserScript", () => {
-  it("uses match-pattern excludes for site-disabled hosts", () => {
-    const script = toRegisteredUserScript(record, {
-      disabledHosts: ["old.reddit.com"],
-      enabledHosts: [],
+  it("preserves metadata exclusions when enabling a script", () => {
+    const script = toRegisteredUserScript(record);
+    expect(script.excludeMatches).toEqual(record.meta.excludeMatches);
+    expect(script.excludeGlobs).toEqual(record.meta.excludeGlobs);
+  });
+});
+
+describe("registration I/O", () => {
+  it("skips updates for an unchanged enabled script", async () => {
+    const get = vi.fn().mockResolvedValue({ settings: { enabled: true } });
+    const update = vi.fn();
+    const register = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {},
+      storage: { local: { get } },
+      userScripts: {
+        getScripts: vi.fn().mockResolvedValue([toRegisteredUserScript(record)]),
+        update,
+        register,
+      },
     });
 
-    expect(script.excludeMatches ?? []).toContain("*://old.reddit.com/*");
-    expect(script.excludeGlobs ?? []).not.toContain("*://old.reddit.com/*");
+    await expect(syncScriptRegistration(record)).resolves.toBeNull();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("settings");
+    expect(update).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
   });
 
-  it("keeps ported host disables as globs", () => {
-    const script = toRegisteredUserScript(record, {
-      disabledHosts: ["localhost:5173"],
-      enabledHosts: [],
+  it("unregisters a disabled script without reading settings or source", async () => {
+    const get = vi.fn();
+    const unregister = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", {
+      runtime: {},
+      storage: { local: { get } },
+      userScripts: { unregister },
     });
 
-    expect(script.excludeMatches ?? []).not.toContain("*://localhost:5173/*");
-    expect(script.excludeGlobs ?? []).toContain("*://localhost:5173/*");
+    await expect(syncScriptRegistration({ ...record, status: "disabled" })).resolves.toBeNull();
+    expect(unregister).toHaveBeenCalledWith({ ids: [record.id] });
+    expect(get).not.toHaveBeenCalled();
   });
 
-  it("removes matching metadata excludes when a host is site-enabled", () => {
-    const script = toRegisteredUserScript(record, {
-      disabledHosts: [],
-      enabledHosts: ["old.reddit.com"],
+  it("does not load disabled script sources during reconciliation", async () => {
+    const get = vi.fn(async (keys: string | string[]) => {
+      if (keys === "settings") return { settings: { enabled: true } };
+      if (keys === "scriptIndex")
+        return {
+          scriptIndex: [
+            { id: record.id, name: "x", status: "enabled", position: 0 },
+            { id: "disabled", name: "off", status: "disabled", position: 1 },
+          ],
+        };
+      return { [`script:${record.id}`]: record };
+    });
+    const register = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", {
+      runtime: {},
+      storage: { local: { get } },
+      userScripts: {
+        getScripts: vi.fn().mockResolvedValue([]),
+        register,
+      },
     });
 
-    expect(script.excludeMatches ?? []).not.toContain("https://old.reddit.com/*");
-    expect(script.excludeGlobs ?? []).not.toContain("https://old.reddit.com/*");
+    await reconcileRegistrations();
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(get).toHaveBeenLastCalledWith([`script:${record.id}`]);
+    expect(register).toHaveBeenCalledWith([toRegisteredUserScript(record)]);
   });
 });
 

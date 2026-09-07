@@ -2,16 +2,17 @@ import "./style.css";
 
 import { describeError } from "../domain/error-message";
 import { scriptMatchesUrl } from "../domain/url-match";
-import type { ScriptId, UserScriptRecord } from "../domain/types";
-import { reconcileRegistrations, syncScriptRegistration } from "../services/registration";
+import type { ScriptId, ScriptIndexItem } from "../domain/types";
+import { reconcileRegistrations } from "../services/registration";
+import { setScriptEnabled, withScriptMutation } from "../services/script-actions";
 import {
   getExtensionEnabled,
-  getScriptHostOverrides,
+  getScript,
   getScripts,
   listScriptIndex,
+  onScriptsChanged,
   setExtensionEnabled,
   setPendingOptionsScriptId,
-  setScriptHostOverride,
 } from "../services/storage";
 
 const elements = {
@@ -21,7 +22,20 @@ const elements = {
   scripts: byId<HTMLElement>("scripts"),
 };
 
+type ScriptRow = {
+  element: HTMLElement;
+  name: HTMLElement;
+  edit: HTMLButtonElement;
+  toggle: HTMLInputElement;
+  pending: boolean;
+};
+
+const rows = new Map<ScriptId, ScriptRow>();
+const matchingIds = new Set<ScriptId>();
+let scriptIndex: readonly ScriptIndexItem[] = [];
+
 const boot = async (): Promise<void> => {
+  elements.globalToggle.disabled = true;
   elements.openOptions.addEventListener("click", () => {
     void runAction(async () => {
       await chrome.runtime.openOptionsPage();
@@ -31,129 +45,153 @@ const boot = async (): Promise<void> => {
   elements.globalToggle.addEventListener("change", () => {
     void runAction(handleGlobalToggle);
   });
-  elements.globalToggle.checked = await getExtensionEnabled();
 
-  const tabUrl = await getActiveTabUrl();
-  if (tabUrl === null) {
-    clearStatus();
-    return;
+  let revision = 0;
+  let ready = false;
+  let tabUrl: string | null = null;
+  onScriptsChanged((changes) => {
+    revision += 1;
+    if (!ready) {
+      return;
+    }
+    if (changes.enabled !== undefined) {
+      elements.globalToggle.checked = changes.enabled;
+    }
+    if (changes.index !== undefined) {
+      scriptIndex = changes.index;
+    }
+    for (const [id, record] of changes.records) {
+      if (record !== null && tabUrl !== null && scriptMatchesUrl(record.meta, tabUrl)) {
+        matchingIds.add(id);
+      } else {
+        matchingIds.delete(id);
+      }
+    }
+    renderScripts();
+  });
+
+  tabUrl = await getActiveTabUrl();
+  // Retry only if a storage event overtook the initial snapshot.
+  for (;;) {
+    const version = revision;
+    const [enabled, index] = await Promise.all([getExtensionEnabled(), listScriptIndex()]);
+    const records = tabUrl === null ? [] : await getScripts(index.map((item) => item.id));
+    if (version !== revision) {
+      continue;
+    }
+    elements.globalToggle.checked = enabled;
+    scriptIndex = index;
+    for (const record of records) {
+      if (record !== null && tabUrl !== null && scriptMatchesUrl(record.meta, tabUrl)) {
+        matchingIds.add(record.id);
+      }
+    }
+    ready = true;
+    break;
   }
-
-  const host = hostLabel(tabUrl);
-  await renderScripts(tabUrl, host);
+  elements.globalToggle.disabled = false;
+  renderScripts();
 };
 
 const handleGlobalToggle = async (): Promise<void> => {
-  await setExtensionEnabled(elements.globalToggle.checked);
-  const error = await reconcileRegistrations();
-  if (error !== null) {
-    showStatus(error.message);
+  const enabled = elements.globalToggle.checked;
+  elements.globalToggle.disabled = true;
+  try {
+    await withScriptMutation(async () => {
+      await setExtensionEnabled(enabled);
+      const error = await reconcileRegistrations();
+      if (error !== null) {
+        throw new Error(error.message);
+      }
+    });
+  } catch (error) {
+    elements.globalToggle.checked = await getExtensionEnabled();
+    renderScripts();
+    throw error;
+  } finally {
+    elements.globalToggle.disabled = false;
+    renderScripts();
   }
-  await bootRowsOnly();
 };
 
-const bootRowsOnly = async (): Promise<void> => {
-  const tabUrl = await getActiveTabUrl();
-  if (tabUrl === null) {
-    clearStatus();
-    return;
+const renderScripts = (): void => {
+  const visibleIds = new Set<ScriptId>();
+  let position = 0;
+  for (const item of scriptIndex) {
+    if (!matchingIds.has(item.id)) {
+      continue;
+    }
+    visibleIds.add(item.id);
+    let row = rows.get(item.id);
+    if (row === undefined) {
+      row = createScriptRow(item.id);
+      rows.set(item.id, row);
+    }
+    if (row.name.textContent !== item.name) {
+      row.name.textContent = item.name;
+      row.edit.title = `edit ${item.name}`;
+      row.toggle.setAttribute("aria-label", `enable ${item.name}`);
+    }
+    if (!row.pending) {
+      row.toggle.checked = item.status === "enabled";
+    }
+    row.toggle.disabled = row.pending || !elements.globalToggle.checked;
+    const current = elements.scripts.children[position] ?? null;
+    if (current !== row.element) {
+      elements.scripts.insertBefore(row.element, current);
+    }
+    position += 1;
   }
-
-  await renderScripts(tabUrl, hostLabel(tabUrl));
+  for (const [id, row] of rows) {
+    if (!visibleIds.has(id)) {
+      row.element.remove();
+      rows.delete(id);
+      matchingIds.delete(id);
+    }
+  }
 };
 
-const renderScripts = async (url: string, host: string): Promise<void> => {
-  const index = await listScriptIndex();
-  const enabledIndex = index.filter((item) => item.status === "enabled");
-  const [records, hostOverrides] = await Promise.all([
-    getScripts(enabledIndex.map((item) => item.id)),
-    getScriptHostOverrides(host),
-  ]);
-  const matches = records
-    .filter((record): record is UserScriptRecord => record !== null)
-    .filter((record) => scriptMatchesUrl(record.meta, url))
-    .map((record) => ({
-      record,
-      siteEnabled: getSiteEnabled(record, hostOverrides),
-    }));
-
-  if (matches.length === 0) {
-    clearStatus();
-    elements.scripts.replaceChildren();
-    return;
-  }
-
-  elements.status.hidden = true;
-  elements.scripts.replaceChildren(
-    ...matches.map((item) => renderScriptRow(item.record, host, item.siteEnabled)),
-  );
-};
-
-const renderScriptRow = (
-  record: UserScriptRecord,
-  host: string,
-  siteEnabled: boolean,
-): HTMLElement => {
-  const row = document.createElement("div");
-  row.className = "script-row";
-
+const createScriptRow = (id: ScriptId): ScriptRow => {
+  const element = document.createElement("div");
+  element.className = "script-row";
   const name = document.createElement("span");
-  name.textContent = record.meta.name;
-
   const edit = document.createElement("button");
   edit.type = "button";
   edit.textContent = "</>";
-  edit.title = `edit ${record.meta.name}`;
   edit.addEventListener("click", () => {
-    void runAction(() => openScriptOptions(record.id));
+    void runAction(async () => {
+      await setPendingOptionsScriptId(id);
+      await chrome.runtime.openOptionsPage();
+      window.close();
+    });
   });
 
-  const input = document.createElement("input");
-  input.type = "checkbox";
-  input.checked = siteEnabled;
-  input.disabled = !elements.globalToggle.checked;
-  input.addEventListener("change", () => {
-    void runAction(() => toggleScript(record, host, input.checked));
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  const row = { element, name, edit, toggle, pending: false };
+  toggle.addEventListener("change", () => {
+    const enabled = toggle.checked;
+    row.pending = true;
+    toggle.disabled = true;
+    void runAction(async () => {
+      try {
+        await setScriptEnabled(id, enabled);
+      } catch (error) {
+        toggle.checked = (await getScript(id))?.status === "enabled";
+        throw error;
+      } finally {
+        row.pending = false;
+        renderScripts();
+      }
+    });
   });
-
-  row.append(name, edit, input);
+  element.append(name, edit, toggle);
   return row;
 };
-
-const openScriptOptions = async (id: ScriptId): Promise<void> => {
-  await setPendingOptionsScriptId(id);
-  await chrome.runtime.openOptionsPage();
-  window.close();
-};
-
-const toggleScript = async (
-  record: UserScriptRecord,
-  host: string,
-  enabledForSite: boolean,
-): Promise<void> => {
-  await setScriptHostOverride(record.id, host, enabledForSite);
-  const error = await syncScriptRegistration(record);
-  if (error !== null) {
-    showStatus(error.message);
-  }
-};
-
-const getSiteEnabled = (
-  record: UserScriptRecord,
-  overrides: ReadonlyMap<string, boolean>,
-): boolean => overrides.get(record.id) ?? true;
 
 const getActiveTabUrl = async (): Promise<string | null> => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab?.url ?? null;
-};
-
-const hostLabel = (url: string): string => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
 };
 
 const showStatus = (message: string): void => {

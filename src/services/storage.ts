@@ -7,14 +7,34 @@ const pendingOptionsScriptKey = "pendingOptionsScriptId";
 const settingsKey = "settings";
 const scriptKey = (id: ScriptId): string => `script:${id}`;
 
-type SiteHostOverrides = {
-  disabled: Record<string, string[]>;
-  enabled: Record<string, string[]>;
+type ScriptStorageChanges = {
+  index?: ScriptIndexItem[];
+  enabled?: boolean;
+  records: Map<ScriptId, UserScriptRecord | null>;
 };
 
-export type ScriptHostLists = {
-  disabledHosts: string[];
-  enabledHosts: string[];
+export const onScriptsChanged = (handler: (changes: ScriptStorageChanges) => void): void => {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") {
+      return;
+    }
+
+    const update: ScriptStorageChanges = { records: new Map() };
+    if (changes[indexKey] !== undefined) {
+      update.index = decodeScriptIndex(changes[indexKey].newValue);
+    }
+    if (changes[settingsKey] !== undefined) {
+      update.enabled = decodeExtensionEnabled(changes[settingsKey].newValue);
+    }
+    for (const [key, change] of Object.entries(changes)) {
+      if (key.startsWith("script:")) {
+        update.records.set(key.slice(7) as ScriptId, decodeScriptRecord(change.newValue));
+      }
+    }
+    if (update.index !== undefined || update.enabled !== undefined || update.records.size > 0) {
+      handler(update);
+    }
+  });
 };
 
 export const listScriptIndex = async (): Promise<ScriptIndexItem[]> => {
@@ -68,14 +88,10 @@ export const saveScripts = async (records: readonly UserScriptRecord[]): Promise
 };
 
 export const deleteScript = async (id: ScriptId): Promise<void> => {
-  const [index, hostOverrides] = await Promise.all([listScriptIndex(), getSiteHostOverrides()]);
-  delete hostOverrides.disabled[id];
-  delete hostOverrides.enabled[id];
+  const index = await listScriptIndex();
   await chrome.storage.local.remove(scriptKey(id));
   await chrome.storage.local.set({
     [indexKey]: index.filter((item) => item.id !== id),
-    [siteDisabledKey]: hostOverrides.disabled,
-    [siteEnabledKey]: hostOverrides.enabled,
   });
 };
 
@@ -83,19 +99,38 @@ export const updateScriptStatus = async (
   id: ScriptId,
   status: ScriptStatus,
 ): Promise<UserScriptRecord | null> => {
-  const record = await getScript(id);
+  const result = await chrome.storage.local.get([scriptKey(id), indexKey]);
+  const record = decodeScriptRecord(result[scriptKey(id)]);
   if (record === null) {
     return null;
   }
 
+  const index = decodeScriptIndex(result[indexKey]);
+  const item = index.find((entry) => entry.id === id);
+  if (record.status === status && item?.status === status) {
+    return record;
+  }
+
   const updated: UserScriptRecord = { ...record, status };
-  await saveScript(updated);
+  if (item === undefined) {
+    index.push(toIndexItem(updated));
+    index.sort((left, right) => left.position - right.position);
+  } else {
+    item.status = status;
+  }
+  await chrome.storage.local.set({
+    [scriptKey(id)]: updated,
+    [indexKey]: index,
+  });
   return updated;
 };
 
 export const getExtensionEnabled = async (): Promise<boolean> => {
   const result = await chrome.storage.local.get(settingsKey);
-  const settings = result[settingsKey];
+  return decodeExtensionEnabled(result[settingsKey]);
+};
+
+const decodeExtensionEnabled = (settings: unknown): boolean => {
   if (!isObject(settings) || typeof settings["enabled"] !== "boolean") {
     return true;
   }
@@ -105,7 +140,9 @@ export const getExtensionEnabled = async (): Promise<boolean> => {
 export const setExtensionEnabled = async (enabled: boolean): Promise<void> => {
   const result = await chrome.storage.local.get(settingsKey);
   const settings = isObject(result[settingsKey]) ? result[settingsKey] : {};
-  await chrome.storage.local.set({ [settingsKey]: { ...settings, enabled } });
+  if (decodeExtensionEnabled(settings) !== enabled) {
+    await chrome.storage.local.set({ [settingsKey]: { ...settings, enabled } });
+  }
 };
 
 export const setPendingOptionsScriptId = async (id: ScriptId): Promise<void> => {
@@ -131,61 +168,28 @@ export const onPendingOptionsScriptId = (handler: () => void): void => {
   });
 };
 
-export const getScriptHostLists = async (id: ScriptId): Promise<ScriptHostLists> => {
-  const hostOverrides = await getSiteHostOverrides();
-  return scriptHostLists(hostOverrides, id);
-};
-
-export const getScriptsHostLists = async (ids: readonly ScriptId[]): Promise<ScriptHostLists[]> => {
-  if (ids.length === 0) {
-    return [];
+export const migrateSiteOverrides = async (): Promise<void> => {
+  const result = await chrome.storage.local.get([siteDisabledKey, siteEnabledKey]);
+  if (result[siteDisabledKey] === undefined && result[siteEnabledKey] === undefined) {
+    return;
   }
 
-  const hostOverrides = await getSiteHostOverrides();
-  return ids.map((id) => scriptHostLists(hostOverrides, id));
-};
-
-export const getScriptHostOverrides = async (host: string): Promise<Map<ScriptId, boolean>> => {
-  const hostOverrides = await getSiteHostOverrides();
-  const overrides = new Map<ScriptId, boolean>();
-  addHostOverrides(overrides, hostOverrides.disabled, host, false);
-  addHostOverrides(overrides, hostOverrides.enabled, host, true);
-  return overrides;
-};
-
-export const setScriptHostOverride = async (
-  id: ScriptId,
-  host: string,
-  enabled: boolean,
-): Promise<void> => {
-  const hostOverrides = await getSiteHostOverrides();
-  const disabledOverrides = hostOverrides.disabled;
-  const enabledOverrides = hostOverrides.enabled;
-  const disabledHosts = new Set(disabledOverrides[id] ?? []);
-  const enabledHosts = new Set(enabledOverrides[id] ?? []);
-
-  if (enabled) {
-    enabledHosts.add(host);
-    disabledHosts.delete(host);
-  } else {
-    disabledHosts.add(host);
-    enabledHosts.delete(host);
+  // Preserve previous opt-outs when replacing site overrides with one script status.
+  const disabled = result[siteDisabledKey];
+  if (isObject(disabled)) {
+    const ids = Object.entries(disabled)
+      .filter(([, hosts]) => isStringArray(hosts) && hosts.length > 0)
+      .map(([id]) => id as ScriptId);
+    const records = await getScripts(ids);
+    await saveScripts(
+      records
+        .filter(
+          (record): record is UserScriptRecord => record !== null && record.status === "enabled",
+        )
+        .map((record) => ({ ...record, status: "disabled" })),
+    );
   }
-
-  const nextDisabled = { ...disabledOverrides, [id]: [...disabledHosts].sort() };
-  if (nextDisabled[id]?.length === 0) {
-    delete nextDisabled[id];
-  }
-
-  const nextEnabled = { ...enabledOverrides, [id]: [...enabledHosts].sort() };
-  if (nextEnabled[id]?.length === 0) {
-    delete nextEnabled[id];
-  }
-
-  await chrome.storage.local.set({
-    [siteDisabledKey]: nextDisabled,
-    [siteEnabledKey]: nextEnabled,
-  });
+  await chrome.storage.local.remove([siteDisabledKey, siteEnabledKey]);
 };
 
 const toIndexItem = (record: UserScriptRecord): ScriptIndexItem => ({
@@ -194,43 +198,6 @@ const toIndexItem = (record: UserScriptRecord): ScriptIndexItem => ({
   status: record.status,
   position: record.position,
 });
-
-const getSiteHostOverrides = async (): Promise<SiteHostOverrides> => {
-  const result = await chrome.storage.local.get([siteDisabledKey, siteEnabledKey]);
-  return {
-    disabled: decodeSiteDisabledHosts(result[siteDisabledKey]),
-    enabled: decodeSiteDisabledHosts(result[siteEnabledKey]),
-  };
-};
-
-const scriptHostLists = (hostOverrides: SiteHostOverrides, id: ScriptId): ScriptHostLists => ({
-  disabledHosts: hostOverrides.disabled[id] ?? [],
-  enabledHosts: hostOverrides.enabled[id] ?? [],
-});
-
-const decodeSiteDisabledHosts = (value: unknown): Record<string, string[]> => {
-  if (!isObject(value)) {
-    return {};
-  }
-
-  const entries = Object.entries(value).filter(
-    (entry): entry is [string, string[]] => typeof entry[0] === "string" && isStringArray(entry[1]),
-  );
-  return Object.fromEntries(entries);
-};
-
-const addHostOverrides = (
-  result: Map<ScriptId, boolean>,
-  overrides: Record<string, string[]>,
-  host: string,
-  enabled: boolean,
-): void => {
-  for (const [id, hosts] of Object.entries(overrides)) {
-    if (hosts.includes(host)) {
-      result.set(id as ScriptId, enabled);
-    }
-  }
-};
 
 const decodeScriptIndex = (value: unknown): ScriptIndexItem[] => {
   if (!Array.isArray(value)) {
